@@ -1,0 +1,132 @@
+# go-virtio/balloon CI — vet, gofmt, and a 100%-coverage gate that RUNS the
+# test suite on all SIX 64-bit arches the go-virtio stack targets: amd64,
+# arm64, riscv64, loong64, ppc64le and s390x. This is a pure-Go (CGO=0)
+# module.
+#
+# amd64/arm64 run natively on GitHub runners. The other four cross-compile the
+# test binary on the runner and execute it under QEMU (tonistiigi/binfmt).
+# virtio is LITTLE-ENDIAN, and virtio-balloon page-frame-number (PFN) arrays
+# are LE 32-bit (Virtio 1.1 §5.5.6). s390x is BIG-ENDIAN, so it exercises the
+# explicit binary.LittleEndian PFN packing end to end — exactly where a
+# byte-order bug would hide.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CGO_ENABLED: 0
+
+jobs:
+  # vet + gofmt once, on native amd64. (Format/vet are arch-independent.)
+  # The unsafeptr analyzer is disabled: the fake-device test legitimately
+  # reconstructs guest memory from a physical address (a real Go pointer
+  # produced by AllocatePages) to play the device side of the DMA contract.
+  lint:
+    name: vet + gofmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          check-latest: true
+
+      - run: go version
+
+      - name: go vet
+        run: go vet -unsafeptr=false ./...
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt needs to be run on:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+  # Native arches: amd64 (ubuntu-latest) and arm64 (ubuntu-24.04-arm). Full
+  # suite + 100% coverage gate, run directly on the runner.
+  test:
+    name: test (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, arch: amd64 }
+          - { os: ubuntu-24.04-arm, arch: arm64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          check-latest: true
+
+      - run: go version
+
+      - name: test + coverage gate (100%)
+        run: |
+          go test -coverprofile=cover.out ./...
+          go tool cover -func=cover.out | tee cover.txt
+          pct=$(go tool cover -func=cover.out | tail -n 1 | awk '{print $3}' | tr -d '%')
+          echo "total coverage: ${pct}%"
+          # Org-wide hard rule: 100% statement coverage. Never lowered — fill
+          # the gap with a test, or delete the unreachable code.
+          awk -v p="$pct" 'BEGIN { exit !(p+0 >= 100.0) }' || {
+            echo "::error::coverage ${pct}% < 100.0%"; exit 1; }
+
+  # Emulated arches under QEMU. The test binary is cross-compiled on the runner
+  # (CGO=0) and executed inside a per-arch container via tonistiigi/binfmt. qemu
+  # cpu models match the go-virtio stack's other green jobs (power9 for
+  # ppc64le, la464 for loong64, the default "qemu" for s390x — NOT z14, which
+  # is fatal under TCG). loong64 uses the loong64/debian image because Debian
+  # trixie has no official loong64 port image. s390x is BIG-ENDIAN — it
+  # validates the LE PFN-array packing end to end.
+  emulated:
+    name: test (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: riscv64, image: "debian:trixie", qemu: "rv64,v=true,vlen=128" }
+          - { arch: loong64, image: "ghcr.io/loong64/debian:trixie", qemu: "la464" }
+          - { arch: ppc64le, image: "debian:trixie", qemu: "power9" }
+          - { arch: s390x,   image: "debian:trixie", qemu: "qemu" }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          check-latest: true
+
+      - run: go version
+
+      - run: docker run --privileged --rm tonistiigi/binfmt --install all
+
+      - name: build cover test binary
+        run: GOOS=linux GOARCH=${{ matrix.arch }} go test -covermode=atomic -coverpkg=./... -c -o /tmp/cov.test ./...
+
+      - name: run under qemu and gate (100%)
+        run: |
+          docker run --rm --platform linux/${{ matrix.arch }} \
+            -e QEMU_CPU=${{ matrix.qemu }} \
+            -v /tmp:/t ${{ matrix.image }} \
+            /t/cov.test -test.v -test.coverprofile=/t/cov.out
+          go tool cover -func=/tmp/cov.out
+          pct=$(go tool cover -func=/tmp/cov.out | tail -n 1 | awk '{print $3}' | tr -d '%')
+          echo "total coverage: ${pct}%"
+          awk -v p="$pct" 'BEGIN { exit !(p+0 >= 100.0) }' || {
+            echo "::error::coverage ${pct}% < 100.0%"; exit 1; }
