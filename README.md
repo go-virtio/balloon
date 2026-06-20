@@ -1,3 +1,5 @@
+<p align="center"><img src="https://raw.githubusercontent.com/go-virtio/brand/main/social/go-virtio-balloon.png" alt="go-virtio/balloon" width="720"></p>
+
 # go-virtio/balloon
 
 Pure-Go virtio-balloon (memory balloon) driver targeting the
