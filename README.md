@@ -2,6 +2,10 @@
 
 # go-virtio/balloon
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/go-virtio/balloon.svg)](https://pkg.go.dev/github.com/go-virtio/balloon)
+[![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD%203--Clause-blue.svg)](https://opensource.org/licenses/BSD-3-Clause)
+[![CI](https://github.com/go-virtio/balloon/actions/workflows/ci.yml/badge.svg)](https://github.com/go-virtio/balloon/actions/workflows/ci.yml)
+
 Pure-Go virtio-balloon (memory balloon) driver targeting the
 `go-virtio/common` transport interfaces. Implements the modern-transport
 (Virtio 1.0+) init sequence and the two-virtqueue page-transfer path for
